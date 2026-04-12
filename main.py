@@ -4,12 +4,22 @@ from pygame import mixer
 import math
 import asyncio
 
-
 async def main():
     mixer.init(44100, -16, 2, 4096)
     pygame.init()
     SCREEN_WIDTH = 480
     SCREEN_HEIGHT = 800
+
+    LANES = {
+    "s": 60,
+    "d": 180,
+    "j": 300,
+    "k": 420
+    }
+    LANE_KEYS = list(LANES.keys())
+
+    def get_nearest_lane(x):
+        return min(LANES.keys(), key=lambda k: abs(LANES[k] - x))
 
     class Tap(pygame.sprite.Sprite):
         def __init__(self, time, lane, type):
@@ -19,6 +29,13 @@ async def main():
             self.type = type
             self.init = False
             self.speed = 8
+            self.species = "tap"
+
+            self.selected = False
+            self.dragging = False
+            self.offset_y = 0
+
+
             if self.type == "n":
                 self.image = pygame.image.load("NormalTap.png").convert_alpha()
             else:
@@ -48,7 +65,10 @@ async def main():
             if overlap:
                 score = 0
             else:
-                if self.lane == "s" and not keys[K_s] or self.lane == "d" and not keys[K_d] or self.lane == "j" and not keys[K_j] or self.lane == "k" and not keys[K_k]:
+                if ((self.lane == "s" and not keys[K_s]) or
+                    (self.lane == "d" and not keys[K_d]) or
+                    (self.lane == "j" and not keys[K_j]) or
+                    (self.lane == "k" and not keys[K_k])):
                     clicked_lanes[self.lane] = False
                 if not clicked_lanes[self.lane] and not hold_clicked_lanes[self.lane]:
                     if self.lane == "s" and keys[K_s] or self.lane == "d" and keys[K_d] or self.lane == "j" and keys[K_j] or self.lane == "k" and keys[K_k]:
@@ -69,6 +89,38 @@ async def main():
                             self.kill()
                             score = round(0.6*1000000/score_time * multi)
             return clicked_lanes, score
+        
+        def to_chart(self):
+            return f"{self.lane}{self.time}{self.type}"
+        
+        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset):
+            if self.rect.collidepoint(mouse_pos):
+                if mouse_pressed[0]:  # left click
+                    if not self.dragging:
+                        self.dragging = True
+                        self.offset_y = self.rect.centery - mouse_pos[1]
+                elif mouse_pressed[2]:  # right click
+                    self.dragging = False
+                    return "edit"
+
+            if not mouse_pressed[0]:
+                self.dragging = False
+
+            if self.dragging:
+                new_y = mouse_pos[1] + self.offset_y
+
+                pixels_per_250ms = 120
+                ms_per_pixel = 250 / pixels_per_250ms
+
+                self.time = int(y_to_time(new_y, scroll_offset))
+                self.time -= self.time % 10
+
+                # snap lane
+                nearest_lane = get_nearest_lane(mouse_pos[0])
+                self.lane = nearest_lane
+        def update_position(self, scroll_offset):
+            self.rect.centery = time_to_y(self.time, scroll_offset)
+            self.rect.centerx = LANES[self.lane]
 
     class Hold(pygame.sprite.Group):
         def __init__(self, startTime, endTime, lane, type):
@@ -83,6 +135,9 @@ async def main():
             self.speed = 8
             self.held = False
             self.ended = False
+            self.species = "hold"
+            self.dragging = False
+            self.last_mouse_y = 0
 
             length = (int(endTime)-int(startTime)) * self.speed // 10
 
@@ -172,13 +227,99 @@ async def main():
                 clicked_lanes[self.lane] = False
                 tap_clicked_lanes[self.lane] = False
             return clicked_lanes, score
+        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset):
+            for sprite in self:
+                if sprite.rect.collidepoint(mouse_pos):
+                    if mouse_pressed[0]:
+                        if not self.dragging:
+                            self.dragging = True
+                            self.last_mouse_y = mouse_pos[1]
 
+            if not mouse_pressed[0]:
+                self.dragging = False
+
+            if self.dragging:
+                dy = mouse_pos[1] - self.last_mouse_y
+                self.last_mouse_y = mouse_pos[1]
+
+                for sprite in self:
+                    sprite.rect.centery += dy
+                
+                nearest_lane = get_nearest_lane(mouse_pos[0])
+                self.lane = nearest_lane
+
+                for sprite in self:
+                    sprite.rect.centerx = LANES[self.lane]
+
+                pixels_per_250ms = 120
+                ms_per_pixel = 250 / pixels_per_250ms
+
+                top_sprite = min(self, key=lambda s: s.rect.centery)
+                bottom_sprite = max(self, key=lambda s: s.rect.centery)
+
+                self.startTime = int(y_to_time(top_sprite.rect.centery, scroll_offset))
+                self.endTime = int(y_to_time(bottom_sprite.rect.centery, scroll_offset))
+
+                self.startTime -= self.startTime % 10
+                self.endTime -= self.endTime % 10
+        def to_chart(self):
+            return f"{self.lane}{self.startTime}-{self.endTime}{self.type}"
+        def rebuild(self, scroll_offset):
+            self.empty()
+
+            pixels_per_250ms = 120
+            ms_per_pixel = 250 / pixels_per_250ms
+
+            length = int((self.endTime - self.startTime) * self.speed // 10)
+
+            for i in range(length):
+                x = pygame.sprite.Sprite()
+
+                if i == 0:
+                    x.image = pygame.image.load("HoldStart.png")
+                elif i == length - 1:
+                    x.image = pygame.image.load("HoldEnd.png")
+                else:
+                    x.image = pygame.image.load("HoldMiddle.png")
+
+                # Convert time → position
+                time = self.startTime + (i / length) * (self.endTime - self.startTime)
+                y = 650 - (time - scroll_offset) * (pixels_per_250ms / 250)
+
+                x.rect = x.image.get_rect(center=(LANES[self.lane], y))
+                self.add(x)
+
+    def time_to_y(time, scroll_offset):
+        pixels_per_250ms = 120
+        return 650 - (time - scroll_offset) * (pixels_per_250ms / 250)
+    
+    def y_to_time(y, scroll_offset):
+        pixels_per_250ms = 120
+        ms_per_pixel = 250 / pixels_per_250ms
+        return (650 - y) * ms_per_pixel + scroll_offset
+
+    def wrap_text(text, font, max_width):
+        words = text.split()
+        lines = []
+        current_line = ""
+
+        for word in words:
+            test_line = f"{current_line} {word}".strip()
+            if font.size(test_line)[0] <= max_width:
+                current_line = test_line
+            else:
+                lines.append(current_line)
+                current_line = word
+        if current_line:
+            lines.append(current_line)
+
+        return lines
 
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption("Rhota - Rhythm Game")
     mixer.music.set_volume(0.7)
 
-    #achromatic is misaligned, need to rewrite, nevermeetagain is on beat but started too early
+    #achromatic is misaligned, need to rewrite, nevermeetagain is on beat but started too early, only intro of badapple is complete
     songs = {"achromatic": ['s450n', 'd460n', 'j470n', 'k480n', 'j510n', 's540n', 'd562n', 'j570n', 's600n',
     'd622n', 'd630n', 's652n', 'k660n', 'j690n', 's720n', 'd750n', 'k780n', 'j810n',
     'd840n', 'j840n', 's870n', 'd900n', 'j900n', 'k930n', 'd960n', 'j990n', 'k1020n',
@@ -214,12 +355,12 @@ async def main():
     "j1000n","k1006n","d1013-1039n","j1026n","s1045n","k1052n","s1058n","k1065-1091n","s1078n","j1097n","d1104n","j1110n","s1117n",
     "k1130n","j1137n","k1143n","s1156n","d1163n","j1169-1195n","s1182n","d1201n","k1208n","d1214n","s1221-1247n","k1234n","j1253n",
     "d1260n","j1266n","k1273-1299n","s1286n","d1305n","j1312n","d1318n","k1325n","j1338n","s1345n","s1351n","d1364n","k1371n","d1377-1403n",
-    "s1390n","k1409n","s1416n","j1422n","k1429-1455n","d1442n","j1461n","s1468n","j1474n","d1481-1507n","j1494n","s1513n","k1520n","s1526n"],
+    "s1390n","k1409n","s1416n","j1422n","k1429-1455n", "d1442n","j1461n","s1468n","j1474n","d1481-1507n","j1494n","s1513n","k1520n","s1526n"],
     
     "nevermeetagain": ["s533-640n","d650n","j667n","k683n","j699n","k716n","j733n","k749n","s766-872n","d766-872n",
     "j917n","k933n","k950n","j967n","d983n","s1000n","d1017n","j1033-1160n","k1033-1160n","s1183n","d1200n","k1217n",
-    "j1233n","d1250n","s1267n","k1283n","d1300-1450n","j1300-1450n"]
-    }
+    "j1233n","d1250n","s1267n","k1283n","d1300-1450n","j1300-1450n"]}
+
     music = {"achromatic": "achromatic.mp3", "nevermeetagain":"不重逢.mp3", "badapple":"badapple.mp3"}
     tap_notes_group = pygame.sprite.Group()
     hold_notes_group = []
@@ -230,8 +371,11 @@ async def main():
     frame = 0
     running = True
     clock = pygame.time.Clock()
+    cadences = 0
+    cadence_booster = 1
     score = 0
     music_start_time = 0 
+    editing_active = False
     while running:
         for event in pygame.event.get(): 
             if event.type == KEYDOWN:
@@ -239,6 +383,51 @@ async def main():
                     running = False
             elif event.type == QUIT:
                 running = False
+            if event.type == MOUSEBUTTONDOWN and editing_active:
+                editing_active = False
+            if editing_active:
+                if event.type == KEYDOWN:
+                    if event.key == K_RETURN:
+                        try:
+                            if isinstance(editing_note, Tap):
+                                lane = editing_text[0]
+                                time = int(editing_text[1:-1])
+                                type = editing_text[-1]
+
+                                editing_note.lane = lane
+                                editing_note.time = time
+                                editing_note.type = type
+                                editing_note.rect.centerx = LANES[editing_note.lane]
+                                pixels_per_250ms = 120
+                                ms_per_pixel = 250 / pixels_per_250ms
+
+                                editing_note.rect.centery = 650 - ((editing_note.time - scroll_offset) / ms_per_pixel)
+
+                            else:
+                                lane = editing_text[0]
+                                rest = editing_text[1:-1]
+                                type = editing_text[-1]
+
+                                start, end = rest.split("-")
+
+                                editing_note.lane = lane
+                                editing_note.startTime = int(start)
+                                editing_note.endTime = int(end)
+                                editing_note.type = type
+
+                                editing_note.rebuild(scroll_offset)
+
+                        except:
+                            print("Invalid format")
+
+                        editing_active = False
+                        editing_note = None
+
+                    elif event.key == K_BACKSPACE:
+                        editing_text = editing_text[:-1]
+
+                    else:
+                        editing_text += event.unicode
         pressed_keys = pygame.key.get_pressed()
         if status == "home":
             if start:
@@ -254,11 +443,13 @@ async def main():
                 achromatic_icon = pygame.image.load("Achromatic.png").convert_alpha()
                 nevermeetagain_icon = pygame.image.load("Meeting.png").convert_alpha()
                 icon_list = [achromatic_icon, badapple_icon, nevermeetagain_icon]
-                font = pygame.font.Font("SFNSMono.ttf", 30)
+                font = pygame.font.Font("SFNSMono.ttf", 25)
                 start = False
                 downkey = False
                 upkey = False
                 enterkey = True
+                rightkey = True
+                leftkey = True
             if enterkey and not pressed_keys[K_RETURN]:
                 enterkey = False
             if pressed_keys[K_DOWN] and not downkey:
@@ -269,21 +460,21 @@ async def main():
                 icon_list.insert(0, icon_list[-1])
                 icon_list.pop()
                 upkey = True
+            if pressed_keys[K_LEFT] and not leftkey:
+                status = "charter"
+                start = True
+            elif pressed_keys[K_RIGHT] and not rightkey:
+                status = "gacha"
+                start = True
             if upkey and not pressed_keys[K_UP]:
                 upkey = False
             if downkey and not pressed_keys[K_DOWN]:
                 downkey = False
+            if rightkey and not pressed_keys[K_RIGHT]:
+                rightkey = False
+            if leftkey and not pressed_keys[K_LEFT]:
+                leftkey = False
             
-            if icon_list[1] == achromatic_icon:
-                song_text = "Self-Inflicted Achromatic"
-                song_rend = font.render(song_text, True, (0,0,0))
-            elif icon_list[1] == badapple_icon:
-                song_text = "Bad Apple!!"
-                song_rend = font.render(song_text, True, (0,0,0))
-            elif icon_list[1] == nevermeetagain_icon:
-                song_text = "Never Meet Again"
-                song_rend = font.render(song_text, True, (0,0,0))
-            song_rect = song_rend.get_rect(center = (240, 175))
             if pressed_keys[K_RETURN] and not enterkey:
                 if icon_list[1] == badapple_icon:
                     status = "badapple"
@@ -298,9 +489,27 @@ async def main():
             screen.blit(icon_list[0], (90, -220))
             screen.blit(icon_list[1], (90, 250))
             screen.blit(icon_list[2], (90, 715))
-            screen.blit(song_rend, song_rect)
+            
+            if icon_list[1] == achromatic_icon:
+                song_lines = wrap_text("Self-Inflicted Achromatic", font, 100)
+                y = 125
+                for line in song_lines:
+                    song_rend = font.render(line, True, (0,0,0))
+                    song_rect = song_rend.get_rect(center = (240, y))
+                    screen.blit(song_rend, song_rect)
+                    y += 35
+            elif icon_list[1] == badapple_icon:
+                song_text = "Bad Apple!!"
+                song_rend = font.render(song_text, True, (0,0,0))
+                song_rect = song_rend.get_rect(center = (240, 175))
+                screen.blit(song_rend, song_rect)
+            elif icon_list[1] == nevermeetagain_icon:
+                song_text = "Never Meet Again"
+                song_rend = font.render(song_text, True, (0,0,0))
+                song_rect = song_rend.get_rect(center = (240, 175))
+                screen.blit(song_rend, song_rect)
 
-        elif status != "score" and status != "home":
+        elif status != "score" and status != "home" and status != "gacha" and status != "charter":
             score = min(1000000, score)
             if start:
                 bg = pygame.image.load(status + "bg.png")
@@ -316,7 +525,7 @@ async def main():
                             total_score_time += 2
                         else:
                             total_score_time += 4
-                    else:
+                    else: 
                         new_note = Tap(note[1:-1], note[0], note[-1])
                         tap_notes_group.add(new_note)
                         if new_note.type == "n":
@@ -341,7 +550,6 @@ async def main():
                     frame = 0
             else:
                 frame += 1
-            
             if "-" in songs[status][-1][1:-1]:
                 if frame >= int(songs[status][-1][songs[status][-1].index("-")+1:-1]) + 50:
                     status = "score"
@@ -354,13 +562,13 @@ async def main():
                     music_start_time = 0
             active_holds = {note for note in hold_notes_group if note.init and not note.endClick}
             for note in tap_notes_group:
-                if not note.init and note.time - frame == 80:  
+                if not note.init and note.time - frame <= 80:  
                     note.init = True
                 if note.init:
                     clicked_notes, score_add = note.update(frame, pressed_keys, clicked_notes, hold_clicked_notes, total_score_time, active_holds)
                     score += score_add
             for note in hold_notes_group:
-                if not note.init and note.startTime - frame == 80:
+                if not note.init and note.startTime - frame <= 80:
                     note.init = True
                 if note.init:
                     hold_clicked_notes, score_add = note.update(frame, pressed_keys, hold_clicked_notes, clicked_notes, total_score_time)
@@ -388,6 +596,7 @@ async def main():
                     bg = pygame.image.load("10.png").convert_alpha()
                 score_font = pygame.font.Font("SFNSMono.ttf", 65)
                 percent_font = pygame.font.Font("SFNSMono.ttf", 50)
+                cadence_font = pygame.font.Font("SFNSMono.ttf", 30)
 
                 score_text = "0" * (7-len(str(score))) + str(score)
                 score_rend = score_font.render(score_text, True, (0,0,0))
@@ -395,6 +604,11 @@ async def main():
                 percent_text = str(round(score/1000000 * 100, 1)) + "%"
                 percent_rend = percent_font.render(percent_text, True, (0,0,0))
                 percent_rect = percent_rend.get_rect(center = (240, 480))
+                cadences_earned = (score//10000) * cadence_booster
+                cadences += cadences_earned
+                cadence_text = "Cadences Earned: " + str(cadences_earned)
+                cadence_rend = cadence_font.render(cadence_text, True, (189, 231, 255))
+                cadence_rect = cadence_rend.get_rect(center = (240, 560))
                 start = False
             if pressed_keys[K_RETURN]:
                 status = 'home'
@@ -402,6 +616,107 @@ async def main():
             screen.blit(bg, (0,0))
             screen.blit(score_rend, score_rect)
             screen.blit(percent_rend, percent_rect)
+            screen.blit(cadence_rend, cadence_rect)
+        elif status == "gacha":
+            if start:
+                bg = pygame.image.load("HomeBG.png")
+                p_key = False
+                h_key = True
+                start = False
+            screen.blit(bg, (0,0))
+        elif status == "charter":
+            if start:
+                bg = pygame.image.load("Background1.png")
+                start = False
+                p_key = False
+                h_key = False
+                scroll_offset = 0
+                scroll_speed = 20
+                placed_notes = []
+                editing_note = None
+                editing_text = ""
+                editing_active = False
+
+            mouse_pos = pygame.mouse.get_pos()
+            mouse_pressed = pygame.mouse.get_pressed()
+
+            if pressed_keys[K_UP]:
+                scroll_offset += scroll_speed
+            if pressed_keys[K_DOWN]:
+                scroll_offset -= scroll_speed
+
+            if pressed_keys[K_p] and not p_key:
+                p_key = True
+                lane = get_nearest_lane(mouse_pos[0])
+                new_note = Tap(start_ms, lane, "n")
+                placed_notes.append(new_note)
+            elif not pressed_keys[K_p]:
+                p_key = False
+
+            if pressed_keys[K_h] and not h_key:
+                h_key = True
+                lane = get_nearest_lane(mouse_pos[0])
+                new_note = Hold(start_ms, start_ms + 250, lane, "n")
+                new_note = Hold(start_ms, start_ms + 250, lane, "n")
+                new_note.rebuild(scroll_offset)
+                placed_notes.append(new_note)
+            elif not pressed_keys[K_h]:
+                h_key = False
+            
+            for note in placed_notes:
+                result = note.editor_update(mouse_pos, mouse_pressed, scroll_offset)
+
+                if result == "edit":
+                    editing_note = note
+                    editing_active = True
+                    editing_text = note.to_chart()
+
+            screen.blit(bg, (0,0))
+
+            ms_font = pygame.font.Font("SFNSMono.ttf", 15)
+            pixels_per_250ms = 120
+            ms_per_pixel = 250 / pixels_per_250ms
+
+            start_ms = int(scroll_offset * ms_per_pixel)
+
+            start_ms -= start_ms % 250
+
+            for i in range(100):
+                ms = start_ms + i * 250
+                y = 650 - (ms - start_ms) * (pixels_per_250ms / 250)
+
+                if y < -50 or y > SCREEN_HEIGHT + 50:
+                    continue
+
+                ms_text = str(ms) + "ms"
+                ms_rend = ms_font.render(ms_text, True, (255,255,255))
+                ms_rect = ms_rend.get_rect(midleft=(5, y))
+                screen.blit(ms_rend, ms_rect)
+            
+            for note in placed_notes:
+                if isinstance(note, Tap):
+                    if -50 < note.rect.centery < SCREEN_HEIGHT + 50:
+                        screen.blit(note.image, note.rect)
+                    if not note.dragging:
+                        note.update_position(scroll_offset)
+                else:
+                    note.rebuild(scroll_offset)
+                    visible = any(-50 < sprite.rect.centery < SCREEN_HEIGHT + 50 for sprite in note)
+                    if visible:
+                        note.draw(screen)
+            
+            if editing_active:
+                overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, 180))  # dark transparent
+                screen.blit(overlay, (0, 0))
+
+                font = pygame.font.Font("SFNSMono.ttf", 30)
+
+                text_surface = font.render(editing_text, True, (255,255,255))
+                text_rect = text_surface.get_rect(center=(240, 400))
+
+                screen.blit(text_surface, text_rect)
+                
         pygame.display.update()
         clock.tick(60)
         await asyncio.sleep(0)
