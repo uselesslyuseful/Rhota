@@ -93,28 +93,26 @@ async def main():
         def to_chart(self):
             return f"{self.lane}{self.time}{self.type}"
         
-        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset):
+        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset, active_note):
             if self.rect.collidepoint(mouse_pos):
-                if mouse_pressed[0]:  # left click
-                    if not self.dragging:
+                if mouse_pressed[0]:
+                    if not self.dragging and active_note[0] is None:
                         self.dragging = True
+                        active_note[0] = self   # claim drag ownership
                         self.offset_y = self.rect.centery - mouse_pos[1]
-                elif mouse_pressed[2]:  # right click
-                    self.dragging = False
+                elif mouse_pressed[2]:
                     return "edit"
 
             if not mouse_pressed[0]:
-                self.dragging = False
+                if self.dragging:
+                    self.dragging = False
+                    if active_note[0] == self:
+                        active_note[0] = None  # release ownership
 
             if self.dragging:
                 new_y = mouse_pos[1] + self.offset_y
-
-                pixels_per_250ms = 120
-                ms_per_pixel =(3600//bpm)/ pixels_per_250ms
-
                 self.time = int(y_to_time(new_y, scroll_offset))
 
-                # snap lane
                 nearest_lane = get_nearest_lane(mouse_pos[0])
                 self.lane = nearest_lane
         def update_position(self, scroll_offset):
@@ -137,6 +135,7 @@ async def main():
             self.species = "hold"
             self.dragging = False
             self.last_mouse_y = 0
+            self.duration = self.endTime - self.startTime
 
             length = (int(endTime)-int(startTime)) * self.speed // 10
 
@@ -226,12 +225,13 @@ async def main():
                 clicked_lanes[self.lane] = False
                 tap_clicked_lanes[self.lane] = False
             return clicked_lanes, score
-        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset):
+        def editor_update(self, mouse_pos, mouse_pressed, scroll_offset, active_note):
             for sprite in self:
                 if sprite.rect.collidepoint(mouse_pos):
                     if mouse_pressed[0]:
-                        if not self.dragging:
+                        if not self.dragging and active_note[0] is None:
                             self.dragging = True
+                            active_note[0] = self
                             self.last_mouse_y = mouse_pos[1]
                     if mouse_pressed[2]:  # RIGHT CLICK
                         return "edit"
@@ -239,6 +239,8 @@ async def main():
             if not mouse_pressed[0]:
                 if self.dragging:
                     self.dragging = False
+                    if active_note[0] == self:
+                        active_note[0] = None
                     self.rebuild(scroll_offset)
 
             if self.dragging:
@@ -254,7 +256,7 @@ async def main():
                 delta_time = -dy * ms_per_pixel
 
                 self.startTime = int(self.startTime + delta_time)
-                self.endTime = int(self.endTime + delta_time)
+                self.endTime = int(self.startTime + self.duration)
 
                 nearest_lane = get_nearest_lane(mouse_pos[0])
                 self.lane = nearest_lane
@@ -262,7 +264,6 @@ async def main():
                 for sprite in self:
                     sprite.rect.centerx = LANES[self.lane]
 
-                self.rebuild(scroll_offset)
         def to_chart(self):
             return f"{self.lane}{self.startTime}-{self.endTime}{self.type}"
         def rebuild(self, scroll_offset):
@@ -715,6 +716,7 @@ async def main():
                 editing_note = None
                 editing_text = ""
                 editing_active = False
+                active_drag_note = [None]
                 bpm_text = str(bpm)
 
             mouse_pos = pygame.mouse.get_pos()
@@ -747,7 +749,7 @@ async def main():
             
             if not editing_active:
                 for note in placed_notes:
-                    result = note.editor_update(mouse_pos, mouse_pressed, scroll_offset)
+                    result = note.editor_update(mouse_pos, mouse_pressed, scroll_offset, active_drag_note)
                     if result == "edit":
                         editing_note = note
                         editing_active = True
