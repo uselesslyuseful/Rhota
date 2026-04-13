@@ -110,10 +110,9 @@ async def main():
                 new_y = mouse_pos[1] + self.offset_y
 
                 pixels_per_250ms = 120
-                ms_per_pixel = 250 / pixels_per_250ms
+                ms_per_pixel =(3600//bpm)/ pixels_per_250ms
 
                 self.time = int(y_to_time(new_y, scroll_offset))
-                self.time -= self.time % 10
 
                 # snap lane
                 nearest_lane = get_nearest_lane(mouse_pos[0])
@@ -234,68 +233,86 @@ async def main():
                         if not self.dragging:
                             self.dragging = True
                             self.last_mouse_y = mouse_pos[1]
+                    if mouse_pressed[2]:  # RIGHT CLICK
+                        return "edit"
 
             if not mouse_pressed[0]:
-                self.dragging = False
+                if self.dragging:
+                    self.dragging = False
+                    self.rebuild(scroll_offset)
 
             if self.dragging:
+                if len(self) == 0:
+                    return
+
                 dy = mouse_pos[1] - self.last_mouse_y
                 self.last_mouse_y = mouse_pos[1]
 
-                for sprite in self:
-                    sprite.rect.centery += dy
-                
+                pixels_per_250ms = 120
+                ms_per_pixel =(3600//bpm)/ pixels_per_250ms
+
+                delta_time = -dy * ms_per_pixel
+
+                self.startTime = int(self.startTime + delta_time)
+                self.endTime = int(self.endTime + delta_time)
+
                 nearest_lane = get_nearest_lane(mouse_pos[0])
                 self.lane = nearest_lane
 
                 for sprite in self:
                     sprite.rect.centerx = LANES[self.lane]
 
-                pixels_per_250ms = 120
-                ms_per_pixel = 250 / pixels_per_250ms
-
-                top_sprite = min(self, key=lambda s: s.rect.centery)
-                bottom_sprite = max(self, key=lambda s: s.rect.centery)
-
-                self.startTime = int(y_to_time(top_sprite.rect.centery, scroll_offset))
-                self.endTime = int(y_to_time(bottom_sprite.rect.centery, scroll_offset))
-
-                self.startTime -= self.startTime % 10
-                self.endTime -= self.endTime % 10
+                self.rebuild(scroll_offset)
         def to_chart(self):
             return f"{self.lane}{self.startTime}-{self.endTime}{self.type}"
         def rebuild(self, scroll_offset):
             self.empty()
-
-            pixels_per_250ms = 120
-            ms_per_pixel = 250 / pixels_per_250ms
-
-            length = int((self.endTime - self.startTime) * self.speed // 10)
-
+            length = max(2, int((self.endTime - self.startTime) * self.speed // 10))
+            
+            sprites = []  # build as list first to guarantee order
             for i in range(length):
                 x = pygame.sprite.Sprite()
-
                 if i == 0:
-                    x.image = pygame.image.load("HoldStart.png")
+                    if self.type == "n":
+                        x.image = pygame.image.load("HoldStart.png")
+                    else:
+                        x.image = pygame.image.load("SpecialHoldStart.png")
                 elif i == length - 1:
-                    x.image = pygame.image.load("HoldEnd.png")
+                    if self.type == "n":
+                        x.image = pygame.image.load("HoldEnd.png")
+                    else:
+                        x.image = pygame.image.load("SpecialHoldEnd.png")
                 else:
                     x.image = pygame.image.load("HoldMiddle.png")
-
-                # Convert time → position
                 time = self.startTime + (i / length) * (self.endTime - self.startTime)
-                y = 650 - (time - scroll_offset) * (pixels_per_250ms / 250)
-
+                y = time_to_y(time, scroll_offset)
                 x.rect = x.image.get_rect(center=(LANES[self.lane], y))
-                self.add(x)
+                x._sort_index = i  # tag for ordered iteration
+                sprites.append(x)
+            
+            for s in sprites:
+                self.add(s)
+        def update_position(self, scroll_offset):
+            pixels_per_250ms = 120
+            duration = max(1, self.endTime - self.startTime)
+            length = max(2, int(duration * self.speed // 10))
+            if length == 0:
+                return
+
+            sorted_sprites = sorted(self.sprites(), key=lambda s: s._sort_index)
+            for i, sprite in enumerate(sorted_sprites):
+                time = self.startTime + (i / length) * (self.endTime - self.startTime)
+                y = 650 - (time - scroll_offset) * (pixels_per_250ms /(3600//bpm))
+                sprite.rect.centery = y
+                sprite.rect.centerx = LANES[self.lane]
 
     def time_to_y(time, scroll_offset):
         pixels_per_250ms = 120
-        return 650 - (time - scroll_offset) * (pixels_per_250ms / 250)
+        return 650 - (time - scroll_offset) * (pixels_per_250ms /(3600//bpm))
     
     def y_to_time(y, scroll_offset):
         pixels_per_250ms = 120
-        ms_per_pixel = 250 / pixels_per_250ms
+        ms_per_pixel =(3600//bpm)/ pixels_per_250ms
         return (650 - y) * ms_per_pixel + scroll_offset
 
     def wrap_text(text, font, max_width):
@@ -376,6 +393,13 @@ async def main():
     score = 0
     music_start_time = 0 
     editing_active = False
+    bpm_edit = False
+    bpm = 100
+    placed_notes = []
+    frames_per_eighth = 1800/bpm
+    curr_frames_display = 0
+    import_sound = None
+    frames_per_note = [["Quarter", "Eighth", "Sixteenth"], [round(2*frames_per_eighth, 2), frames_per_eighth, round(frames_per_eighth/2, 2)]]
     while running:
         for event in pygame.event.get(): 
             if event.type == KEYDOWN:
@@ -385,6 +409,48 @@ async def main():
                 running = False
             if event.type == MOUSEBUTTONDOWN and editing_active:
                 editing_active = False
+            if event.type == MOUSEBUTTONDOWN and bpm_edit:
+                bpm_edit = False
+            if event.type == MOUSEBUTTONDOWN:
+                if status == "charter":
+                    if button_rect.collidepoint(event.pos):
+                        print("*** CHART EXPORT ***")
+                        chart = sorted(
+                            [note.to_chart() for note in placed_notes],
+                            key=lambda x: int(x[1:].split("-")[0][:-1] if "-" not in x else x[1:].split("-")[0])
+                        )
+                        print(chart)
+                    elif bpm_rect.collidepoint(event.pos):
+                        bpm_edit = True
+                    elif frames_rect.collidepoint(event.pos):
+                        curr_frames_display += 1
+                        if curr_frames_display == 3:
+                            curr_frames_display = 0
+                    elif play_rect.collidepoint(event.pos):
+                        chart = sorted(
+                            [note.to_chart() for note in placed_notes],
+                            key=lambda x: int(x[1:].split("-")[0][:-1] if "-" not in x else x[1:].split("-")[0])
+                        )
+                        songs["new_song"] = chart
+                        if import_sound:
+                            music["new_song"] = import_sound
+                        else:
+                            music["new_song"] = None
+                        status = "new_song"
+                        start = True
+            if bpm_edit:
+                if event.type == KEYDOWN:
+                    if event.key == K_RETURN:
+                        try:
+                            bpm = int(bpm_text)
+                            frames_per_eighth = round(1800/bpm, 2)
+                            frames_per_note = [["Quarter", "Eighth", "Sixteenth"], [round(2*frames_per_eighth, 2), frames_per_eighth, round(frames_per_eighth/2, 2)]]
+                        except:
+                            print("Invalid BPM")
+                    elif event.key == K_BACKSPACE:
+                        bpm_text = bpm_text[:-1]
+                    else:
+                        bpm_text += event.unicode
             if editing_active:
                 if event.type == KEYDOWN:
                     if event.key == K_RETURN:
@@ -399,7 +465,7 @@ async def main():
                                 editing_note.type = type
                                 editing_note.rect.centerx = LANES[editing_note.lane]
                                 pixels_per_250ms = 120
-                                ms_per_pixel = 250 / pixels_per_250ms
+                                ms_per_pixel =(3600//bpm)/ pixels_per_250ms
 
                                 editing_note.rect.centery = 650 - ((editing_note.time - scroll_offset) / ms_per_pixel)
 
@@ -408,11 +474,14 @@ async def main():
                                 rest = editing_text[1:-1]
                                 type = editing_text[-1]
 
-                                start, end = rest.split("-")
+                                start_time, end_time = rest.split("-")
+                                editing_note.startTime = int(start_time)
+                                editing_note.endTime = int(end_time)
 
                                 editing_note.lane = lane
-                                editing_note.startTime = int(start)
-                                editing_note.endTime = int(end)
+
+                                if editing_note.endTime < editing_note.startTime:
+                                    editing_note.startTime, editing_note.endTime = editing_note.endTime, editing_note.startTime
                                 editing_note.type = type
 
                                 editing_note.rebuild(scroll_offset)
@@ -464,7 +533,7 @@ async def main():
                 status = "charter"
                 start = True
             elif pressed_keys[K_RIGHT] and not rightkey:
-                status = "gacha"
+                status = "home"
                 start = True
             if upkey and not pressed_keys[K_UP]:
                 upkey = False
@@ -512,12 +581,16 @@ async def main():
         elif status != "score" and status != "home" and status != "gacha" and status != "charter":
             score = min(1000000, score)
             if start:
-                bg = pygame.image.load(status + "bg.png")
+                tap_notes_group.empty()
+                hold_notes_group.clear()
+                if status != "new_song":
+                    bg = pygame.image.load(status + "bg.png")
+                else:
+                    bg = pygame.image.load("Background1.png")
                 start = False
                 total_score_time = 0
                 for note in songs[status]:
                     if "-" in note:
-                        print(note)
                         note_sep = note.split("-")
                         new_note = Hold(note_sep[0][1:], note_sep[1][:-1], note_sep[0][0], note_sep[1][-1])
                         hold_notes_group.append(new_note)
@@ -533,21 +606,25 @@ async def main():
                         else:
                             total_score_time += 2
                 score = 0
-                mixer.music.load(music[status])
-                mixer.music.play()
+                if music[status]:
+                    mixer.music.load(music[status])
+                    mixer.music.play()
                 frame = 0
                 music_start_time = pygame.time.get_ticks()
                 await asyncio.sleep(0.1)  # Small delay to let music start
-            if music_start_time > 0:
-                music_pos_ms = mixer.music.get_pos()
-                if music_pos_ms >= 0:
-                    frame = int(music_pos_ms / 16.67)  # Convert ms to frames (60fps)
+            if music[status]:
+                if music_start_time > 0:
+                    music_pos_ms = mixer.music.get_pos()
+                    if music_pos_ms >= 0:
+                        frame = int(music_pos_ms / 16.67)  # Convert ms to frames (60fps)
+                    else:
+                        elapsed_ms = pygame.time.get_ticks() - music_start_time
+                        web_audio_offset_frames = 45  # Adjust if needed
+                        frame = int(elapsed_ms / 16.67) + web_audio_offset_frames
+                    if frame < 0:
+                        frame = 0
                 else:
-                    elapsed_ms = pygame.time.get_ticks() - music_start_time
-                    web_audio_offset_frames = 45  # Adjust if needed
-                    frame = int(elapsed_ms / 16.67) + web_audio_offset_frames
-                if frame < 0:
-                    frame = 0
+                    frame += 1
             else:
                 frame += 1
             if "-" in songs[status][-1][1:-1]:
@@ -627,15 +704,18 @@ async def main():
         elif status == "charter":
             if start:
                 bg = pygame.image.load("Background1.png")
+                button_rect = pygame.Rect(SCREEN_WIDTH - 110, 10, 100, 40)
+                play_rect = pygame.Rect(SCREEN_WIDTH - 110, 55, 100, 40)
+                button_font = pygame.font.Font("SFNSMono.ttf", 20)
                 start = False
                 p_key = False
                 h_key = False
                 scroll_offset = 0
                 scroll_speed = 20
-                placed_notes = []
                 editing_note = None
                 editing_text = ""
                 editing_active = False
+                bpm_text = str(bpm)
 
             mouse_pos = pygame.mouse.get_pos()
             mouse_pressed = pygame.mouse.get_pressed()
@@ -644,6 +724,9 @@ async def main():
                 scroll_offset += scroll_speed
             if pressed_keys[K_DOWN]:
                 scroll_offset -= scroll_speed
+            
+            if pressed_keys[K_RIGHT]:
+                status = "home"
 
             if pressed_keys[K_p] and not p_key:
                 p_key = True
@@ -656,54 +739,30 @@ async def main():
             if pressed_keys[K_h] and not h_key:
                 h_key = True
                 lane = get_nearest_lane(mouse_pos[0])
-                new_note = Hold(start_ms, start_ms + 250, lane, "n")
-                new_note = Hold(start_ms, start_ms + 250, lane, "n")
+                new_note = Hold(start_ms, start_ms +(3600//bpm), lane, "n")
                 new_note.rebuild(scroll_offset)
                 placed_notes.append(new_note)
             elif not pressed_keys[K_h]:
                 h_key = False
             
-            for note in placed_notes:
-                result = note.editor_update(mouse_pos, mouse_pressed, scroll_offset)
-
-                if result == "edit":
-                    editing_note = note
-                    editing_active = True
-                    editing_text = note.to_chart()
+            if not editing_active:
+                for note in placed_notes:
+                    result = note.editor_update(mouse_pos, mouse_pressed, scroll_offset)
+                    if result == "edit":
+                        editing_note = note
+                        editing_active = True
+                        editing_text = note.to_chart()
 
             screen.blit(bg, (0,0))
-
-            ms_font = pygame.font.Font("SFNSMono.ttf", 15)
-            pixels_per_250ms = 120
-            ms_per_pixel = 250 / pixels_per_250ms
-
-            start_ms = int(scroll_offset * ms_per_pixel)
-
-            start_ms -= start_ms % 250
-
-            for i in range(100):
-                ms = start_ms + i * 250
-                y = 650 - (ms - start_ms) * (pixels_per_250ms / 250)
-
-                if y < -50 or y > SCREEN_HEIGHT + 50:
-                    continue
-
-                ms_text = str(ms) + "ms"
-                ms_rend = ms_font.render(ms_text, True, (255,255,255))
-                ms_rect = ms_rend.get_rect(midleft=(5, y))
-                screen.blit(ms_rend, ms_rect)
             
             for note in placed_notes:
                 if isinstance(note, Tap):
+                    note.update_position(scroll_offset)
                     if -50 < note.rect.centery < SCREEN_HEIGHT + 50:
                         screen.blit(note.image, note.rect)
-                    if not note.dragging:
-                        note.update_position(scroll_offset)
                 else:
-                    note.rebuild(scroll_offset)
-                    visible = any(-50 < sprite.rect.centery < SCREEN_HEIGHT + 50 for sprite in note)
-                    if visible:
-                        note.draw(screen)
+                    note.update_position(scroll_offset)
+                    note.draw(screen)
             
             if editing_active:
                 overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -716,6 +775,46 @@ async def main():
                 text_rect = text_surface.get_rect(center=(240, 400))
 
                 screen.blit(text_surface, text_rect)
+
+            ms_font = pygame.font.Font("SFNSMono.ttf", 15)
+            pixels_per_250ms = 120
+            ms_per_pixel = (3600//bpm) / pixels_per_250ms
+
+            start_ms = int(scroll_offset)
+
+            for i in range(100):
+                ms = start_ms + i *(3600//bpm)
+                y = 650 - (ms - start_ms) * (pixels_per_250ms /(3600//bpm))
+
+                if y < -50 or y > SCREEN_HEIGHT + 50:
+                    continue
+
+                ms_text = str(ms) + "f"
+                ms_rend = ms_font.render(ms_text, True, (255,255,255))
+                ms_rect = ms_rend.get_rect(midleft=(5, y))
+                screen.blit(ms_rend, ms_rect)
+            
+            pygame.draw.rect(screen, (50, 50, 50), button_rect, border_radius=8)
+            pygame.draw.rect(screen, (200, 200, 200), button_rect, 2, border_radius=8)
+
+            button_text = button_font.render("Export", True, (255, 255, 255))
+            text_rect = button_text.get_rect(center=button_rect.center)
+            screen.blit(button_text, text_rect)
+
+            pygame.draw.rect(screen, (50, 50, 50), play_rect, border_radius=8)
+            pygame.draw.rect(screen, (200, 200, 200), play_rect, 2, border_radius=8)
+
+            play_text = button_font.render("Play", True, (255,255,255))
+            play_text_rect = play_text.get_rect(center=play_rect.center)
+            screen.blit(play_text, play_text_rect)
+
+            bpm_render = ms_font.render(bpm_text + "BPM", True, (255, 255, 255))
+            bpm_rect = bpm_render.get_rect(bottomright=(475, 795))
+            screen.blit(bpm_render, bpm_rect)
+
+            frames_rend = ms_font.render(f"{frames_per_note[0][curr_frames_display]}: {frames_per_note[1][curr_frames_display]}", True, (255,255,255))
+            frames_rect = frames_rend.get_rect(bottomleft=(5, 795))
+            screen.blit(frames_rend, frames_rect)
                 
         pygame.display.update()
         clock.tick(60)
