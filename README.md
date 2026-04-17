@@ -68,12 +68,6 @@ Rhota is a rhythm game made with python featuring three songs and a note editor.
 
   While code has been implemented to attempt to prevent this. pygame mixer is unreliable and the addition of the web browser means it may often be a second out of sync. Restarting the game tends to fix this. 
 
-## Cheat Codes
-
-The current Rhota program has no way to skip past a song once it has started. However, all pages + songs can be accessed by changing the "status" variable to their names. To see all available score pages, change the "status" variable to "score" and the "score" variable to "1000000" for the 100% page, "910000" for the 90% page, "650000" for the 60% page, and any lower score for the 0% page. 
-
-It is worth noting that all songs are ran using the exact same functions and code, simply with different lists of timings as input. 
-
 ## Support
 
 Gmail: sleep.cats.books@gmail.com
